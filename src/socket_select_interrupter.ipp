@@ -1,6 +1,6 @@
 //////////////////////////////////////////////////////////////////////////////////////////
 // A cross platform socket APIs, support ios & android & wp8 & window store universal app
-// version: 2.3.9
+// version: 3.0
 //////////////////////////////////////////////////////////////////////////////////////////
 /*
 The MIT License (MIT)
@@ -25,8 +25,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
-#ifndef _IMPL_XXSOCKET_SELECT_INTERRUPTER_IPP_
-#define _IMPL_XXSOCKET_SELECT_INTERRUPTER_IPP_
+#ifndef _MASIO_SELECT_INTERRUPTER_IPP_
+#define _MASIO_SELECT_INTERRUPTER_IPP_
 
 #if defined(_MSC_VER) && (_MSC_VER >= 1200)
 # pragma once

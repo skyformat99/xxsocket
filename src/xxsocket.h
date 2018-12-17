@@ -1,11 +1,11 @@
 //////////////////////////////////////////////////////////////////////////////////////////
 // A cross platform socket APIs, support ios & android & wp8 & window store universal app
-// version: 2.3.7
+// version: 3.9.3
 //////////////////////////////////////////////////////////////////////////////////////////
 /*
 The MIT License (MIT)
 
-Copyright (c) 2012-2017 halx99
+Copyright (c) 2012-2018 halx99
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -39,6 +39,7 @@ SOFTWARE.
 #include <stdio.h>
 #include <sstream>
 #include <vector>
+#include <chrono>
 #include "politedef.h"
 
 #pragma warning(push)
@@ -71,11 +72,21 @@ typedef int socklen_t;
 #include <netinet/tcp.h>
 #include <net/if.h>
 #include <arpa/inet.h>
+#if !defined(SD_RECEIVE)
 #define SD_RECEIVE SHUT_RD
+#endif
+#if !defined(SD_SEND)
 #define SD_SEND SHUT_WR
+#endif
+#if !defined(SD_BOTH)
 #define SD_BOTH SHUT_RDWR
+#endif
+#if !defined(closesocket)
 #define closesocket close
+#endif
+#if !defined(ioctlsocket)
 #define ioctlsocket ioctl
+#endif
 typedef int socket_native_type;
 #undef socket
 #endif
@@ -122,6 +133,7 @@ typedef int socket_native_type;
 #undef ESTALE                  
 #undef EREMOTE 
 #undef EBADF
+#undef EFAULT
 
 #define EWOULDBLOCK             WSAEWOULDBLOCK
 #define EINPROGRESS             WSAEINPROGRESS
@@ -161,6 +173,7 @@ typedef int socket_native_type;
 #define ESTALE                  WSAESTALE
 #define EREMOTE                 WSAEREMOTE
 #define EBADF                   WSAEBADF
+#define EFAULT                  WSAEFAULT
 
 #endif
 
@@ -189,9 +202,6 @@ namespace inet {
 // #define _make_dotted_decimal(b1,b2,b3,b4) ( ( ((uint32_t)(b4) << 24) & 0xff000000 ) | ( ((uint32_t)(b3) << 16) & 0x00ff0000 ) | ( ((uint32_t)(b2) << 8) & 0x0000ff00 ) | ( (uint32_t)(b1) & 0x000000ff ) )
 
 static const socket_native_type invalid_socket = (socket_native_type)-1;
-static const u_long blocking = 0;
-static const u_long nonblocking = 1;
-
 
 namespace ip {
 
@@ -339,7 +349,7 @@ union endpoint
 public:
     endpoint(void)
     {
-        ::memset(this, 0x0, sizeof(*this));
+        this->zeroset();
     }
     explicit endpoint(const addrinfo* info)
     {
@@ -356,11 +366,18 @@ public:
 
     void assign(const addrinfo* info)
     {
-        ::memcpy(this, info->ai_addr, info->ai_addrlen);
+        this->assign(info->ai_addr, info->ai_addrlen);
+    }
+
+    void assign(const void* ai_addr, size_t ai_addrlen)
+    {
+        this->zeroset();
+        ::memcpy(this, ai_addr, ai_addrlen);
     }
 
     void assign(const sockaddr* addr)
     {
+        this->zeroset();
         switch (addr->sa_family)
         {
         case AF_INET:
@@ -372,24 +389,36 @@ public:
         }
     }
 
-    void assign(const char* addr, unsigned short port)
+    bool assign(const char* addr, unsigned short port)
     {
-        ::memset(this, 0x0, sizeof(*this));
+        this->zeroset();
 
         /*
         * Windows XP no inet_pton or inet_ntop
         */
         if (strchr(addr, ':') == nullptr)
         { // ipv4
-            this->in4_.sin_family = AF_INET;
-            compat::inet_pton(AF_INET, addr, &this->in4_.sin_addr);
-            this->in4_.sin_port = htons(port);
+            if (compat::inet_pton(AF_INET, addr, &this->in4_.sin_addr) == 1)
+            {
+                this->in4_.sin_family = AF_INET;
+                this->in4_.sin_port = htons(port);
+                return true;
+            }
         }
         else { // ipv6
-            this->in6_.sin6_family = AF_INET6;
-            compat::inet_pton(AF_INET6, addr, &this->in6_.sin6_addr);
-            this->in6_.sin6_port = htons(port);
+            if (compat::inet_pton(AF_INET6, addr, &this->in6_.sin6_addr) == 1) {
+                this->in6_.sin6_family = AF_INET6;
+                this->in6_.sin6_port = htons(port);
+                return true;
+            }
         }
+
+        return false;
+    }
+
+    void zeroset()
+    {
+        ::memset(this, 0x0, sizeof(*this));
     }
 
     void address(const char* addr)
@@ -410,51 +439,57 @@ public:
 
     int af() const
     {
-        return intri_.sa_family;
+        return sa_.sa_family;
     }
     std::string to_string(void) const
     {
-        std::string addr(64, '\0');
+        std::string addr(64, '[');
 
         size_t n = 0;
 
-        switch (intri_.sa_family) {
+        switch (sa_.sa_family) {
         case AF_INET:
-            n = strlen(compat::inet_ntop(AF_INET, &in4_.sin_addr, &addr.front(), 64));
+            n = strlen(compat::inet_ntop(AF_INET, &in4_.sin_addr, &addr.front(), addr.length()));
+            n += sprintf(&addr.front() + n, ":%u", this->port());
             break;
         case AF_INET6:
-            n = strlen(compat::inet_ntop(AF_INET6, &in6_.sin6_addr, &addr.front(), 64));
+            n = strlen(compat::inet_ntop(AF_INET6, &in6_.sin6_addr, &addr.front() + 1, addr.length() - 1));
+            n += sprintf(&addr.front() + n, "]:%u", this->port());
             break;
         }
-        n += sprintf(&addr.front() + n, ":%u", this->port());
-
+        
         addr.resize(n);
 
         return addr;
     }
-    char* to_cstring(char buffer[64]) const // // not safe, if use, please confirm buffer enough
-    {
+    std::string ip() const {
+        std::string ipstring(64, '\0');
+
         size_t n = 0;
-        switch (intri_.sa_family) {
+
+        switch (sa_.sa_family) {
         case AF_INET:
-            n = strlen(compat::inet_ntop(AF_INET, &in4_.sin_addr, buffer, 64));
+            n = strlen(compat::inet_ntop(AF_INET, &in4_.sin_addr, &ipstring.front(), 64));
             break;
         case AF_INET6:
-            n = strlen(compat::inet_ntop(AF_INET6, &in6_.sin6_addr, buffer, 64));
+            n = strlen(compat::inet_ntop(AF_INET6, &in6_.sin6_addr, &ipstring.front(), 64));
             break;
         }
+        ipstring.resize(n);
 
-        sprintf(buffer + n, ":%u", this->port());
-
-        return buffer;
+        return ipstring;
     }
     unsigned short port(void) const
     {
         return ntohs(in4_.sin_port);
     }
-    sockaddr intri_;
-    mutable sockaddr_in in4_;
-    mutable sockaddr_in6 in6_;
+    void port(unsigned short value)
+    {
+        in4_.sin_port = htons(value);
+    }
+    sockaddr sa_;
+    sockaddr_in in4_;
+    sockaddr_in6 in6_;
 };
 
 };
@@ -480,15 +515,17 @@ public: /// portable connect APIs
     // easy to connect a server ipv4 or ipv6 with local ip protocol version detect
     // for support ipv6 ONLY network.
     int xpconnect(const char* hostname, u_short port);
-    int xpconnect_n(const char* hostname, u_short port, long timeout_sec);
+    int xpconnect_n(const char* hostname, u_short port, const std::chrono::microseconds& wtimeout);
 
     // easy to connect a server ipv4 or ipv6.
     int pconnect(const char* hostname, u_short port);
-    int pconnect_n(const char* hostname, u_short port, long timeout_sec);
+    int pconnect_n(const char* hostname, u_short port, const std::chrono::microseconds& wtimeout);
+    int pconnect_n(const char* hostname, u_short port);
 
     // easy to connect a server ipv4 or ipv6.
     int pconnect(const ip::endpoint& ep);
-    int pconnect_n(const ip::endpoint& ep, long timeout_sec);
+    int pconnect_n(const ip::endpoint& ep, const std::chrono::microseconds& wtimeout);
+    int pconnect_n(const ip::endpoint& ep);
 
     // easy to create a tcp ipv4 or ipv6 server socket.
     int pserv(const char* addr, u_short port);
@@ -650,14 +687,15 @@ public:
     ** @returns: [0].succeed, [-1].failed
     */
 
-    int connect_n(const char* addr, u_short port, long timeout_sec);
-    int connect_n(const ip::endpoint& ep, long timeout_sec);
+    int connect_n(const char* addr, u_short port, const std::chrono::microseconds& wtimeout);
+    int connect_n(const ip::endpoint& ep, const std::chrono::microseconds& wtimeout);
 
     int connect_n(const char* addr, u_short port, timeval* timeout);
     int connect_n(const ip::endpoint& ep, timeval* timeout);
 
     static int connect_n(socket_native_type s,const char* addr, u_short port, timeval* timeout);
     static int connect_n(socket_native_type s, const ip::endpoint& ep, timeval* timeout);
+    static int connect_n(socket_native_type s, const ip::endpoint& ep);
     
     /* @brief: Sends data on this connected socket
     ** @params: omit
@@ -678,7 +716,7 @@ public:
     **         Oterwise, If retval <=0, mean error occured, and should close socket. 
     */
     int send_n(const void* buf, int len, timeval* timeout, int flags = 0);
-    int send_n(const void* buf, int len, long timeout_sec, int flags = 0);
+    int send_n(const void* buf, int len, const std::chrono::microseconds& wtimeout, int flags = 0);
     static int send_n(socket_native_type s, const void* buf, int len, timeval* timeout, int flags = 0);
 
 
@@ -703,7 +741,7 @@ public:
     **         If no error occurs, send returns the total number of bytes recvived, 
     **         Oterwise, If retval <=0, mean error occured, and should close socket. 
     */
-    int recv_n(void* buf, int len, long timeout_sec, int flags = 0) const;
+    int recv_n(void* buf, int len, const std::chrono::microseconds& wtimeout, int flags = 0) const;
     int recv_n(void* buf, int len, timeval* timeout, int flags = 0) const;
     static int recv_n(socket_native_type s, void* buf, int len, timeval* timeout, int flags = 0);
 
@@ -788,7 +826,7 @@ public:
     **          [<0].one or more errors occured
     */
     int set_keepalive(int flag = 1, int idle = 7200, int interval = 75, int probes = 10);
-    static int set_keepalive(socket_native_type s, int flag = 1, int idle = 7200, int interval = 75, int probes = 10);
+    static int set_keepalive(socket_native_type s, int flag, int idle, int interval, int probes);
 
 
     /* @brief: Sets the socket option
@@ -878,27 +916,33 @@ public:
 
     static int get_last_errno(void);
     static void set_last_errno(int error);
-    static const char* get_error_msg(int error);
-    
-    /// <summary>
-    /// Resolve as ipv4 or ipv6 endpoint, only return first available endpoint
-    /// </summary>
-    static ip::endpoint resolve(const char* hostname, unsigned short port = 0);
-    
-    /// <summary>
-    /// Force resolve as ipv6 endpoint, only return first available endpoint
-    /// </summary>
-    static ip::endpoint resolve_v6(const char* hostname, unsigned short port = 0);
+    static const char* strerror(int error);
 
     /// <summary>
-    /// Resolve as ipv4 or ipv6 endpoints
+    /// Resolve all as ipv4 or ipv6 endpoints
     /// </summary>
     static bool resolve(std::vector<ip::endpoint>& endpoints, const char* hostname, unsigned short port = 0);
 
     /// <summary>
-    /// Force resolve as ipv6 endpoints
+    /// Resolve as ipv4 address only.
+    /// </summary>
+    static bool resolve_v4(std::vector<ip::endpoint>& endpoints, const char* hostname, unsigned short port = 0);
+
+    /// <summary>
+    /// Resolve as ipv6 address only.
     /// </summary>
     static bool resolve_v6(std::vector<ip::endpoint>& endpoints, const char* hostname, unsigned short port = 0);
+
+    /// <summary>
+    /// Resolve as ipv4 address only and convert to V4MAPPED format.
+    /// </summary>
+    static bool resolve_v4to6(std::vector<ip::endpoint>& endpoints, const char* hostname, unsigned short port = 0);
+
+
+    /// <summary>
+    /// Force resolve all addres to ipv6 endpoints, IP4 with AI_V4MAPPED
+    /// </summary>
+    static bool force_resolve_v6(std::vector<ip::endpoint>& endpoints, const char* hostname, unsigned short port = 0);
 
     /// <summary>
     /// Resolve as ipv4 or ipv6 endpoints with callback
@@ -985,7 +1029,7 @@ namespace net = inet;
 
 #endif
 /*
-* Copyright (c) 2012-2016 by X.D. Guo  ALL RIGHTS RESERVED.
+* Copyright (c) 2012-2018, HALX99, ALL RIGHTS RESERVED.
 * Consult your license regarding permissions and restrictions.
 **/
 

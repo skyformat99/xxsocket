@@ -9,8 +9,8 @@
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
 
-#ifndef XXSOCKET_IMPL_EVENTFD_SELECT_INTERRUPTER_IPP
-#define XXSOCKET_IMPL_EVENTFD_SELECT_INTERRUPTER_IPP
+#ifndef MASIO_EVENTFD_SELECT_INTERRUPTER_IPP
+#define MASIO_EVENTFD_SELECT_INTERRUPTER_IPP
 
 #if defined(_MSC_VER) && (_MSC_VER >= 1200)
 # pragma once
@@ -24,6 +24,9 @@
 #else // __GLIBC__ == 2 && __GLIBC_MINOR__ < 8
 # include <sys/eventfd.h>
 #endif // __GLIBC__ == 2 && __GLIBC_MINOR__ < 8
+
+#include <unistd.h>
+
 //#include <boost/asio/detail/cstdint.hpp>
 //#include <boost/asio/detail/eventfd_select_interrupter.hpp>
 //#include <boost/asio/detail/throw_error.hpp>
